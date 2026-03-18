@@ -25,6 +25,8 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.provider.OpenableColumns;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -2570,6 +2572,9 @@ public class MyApplicationInterface extends BasicApplicationInterface {
             }
             if( MyDebug.LOG )
                 Log.d(TAG, "    time to create thumbnail: " + (System.currentTimeMillis() - debug_time));
+
+            // Trigger Nextcloud upload als ingeschakeld
+            triggerVideoUpload(video_method, uri, filename);
         }
     }
 
@@ -2584,6 +2589,9 @@ public class MyApplicationInterface extends BasicApplicationInterface {
         completeVideo(video_method, uri);
         broadcastVideo(video_method, uri, filename);
 
+        // Trigger Nextcloud upload voor voltooid segment
+        triggerVideoUpload(video_method, uri, filename);
+
         // also need to restart subtitles file
         if( subtitleVideoTimerTask != null ) {
             subtitleVideoTimerTask.cancel();
@@ -2593,6 +2601,57 @@ public class MyApplicationInterface extends BasicApplicationInterface {
             // Assume that video_method is unchanged between old and new video file when restarting.
             startVideoSubtitlesTask(video_method);
         }
+    }
+
+    /**
+     * Trigger Nextcloud upload voor een voltooide video, indien ingeschakeld.
+     * Ondersteunt zowel filesystem-paden (VideoMethod.FILE) als content URIs.
+     */
+    private void triggerVideoUpload(final VideoMethod video_method, final Uri uri, final String filename) {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(main_activity);
+        boolean uploadEnabled = prefs.getBoolean(PreferenceKeys.NextcloudUploadPreferenceKey, false);
+        if( MyDebug.LOG )
+            Log.d(TAG, "triggerVideoUpload: uploadEnabled=" + uploadEnabled + ", video_method=" + video_method);
+        if( uploadEnabled ) {
+            if( video_method == VideoMethod.FILE && filename != null ) {
+                if( MyDebug.LOG )
+                    Log.d(TAG, "Triggering Nextcloud upload for video file: " + filename);
+                NextcloudUploadService.startUpload(main_activity, filename);
+            }
+            else if( uri != null ) {
+                String displayName = getDisplayNameFromUri(uri);
+                if( MyDebug.LOG )
+                    Log.d(TAG, "Triggering Nextcloud upload for video URI: " + displayName);
+                NextcloudUploadService.startUpload(main_activity, uri, displayName);
+            }
+        }
+    }
+
+    /**
+     * Haal de display-naam op van een content URI via ContentResolver.
+     * Fallback naar gegenereerde naam als de query mislukt.
+     */
+    private String getDisplayNameFromUri(Uri uri) {
+        String name = null;
+        try {
+            Cursor cursor = main_activity.getContentResolver().query(
+                uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if( cursor != null ) {
+                try {
+                    if( cursor.moveToFirst() ) {
+                        name = cursor.getString(0);
+                    }
+                }
+                finally {
+                    cursor.close();
+                }
+            }
+        }
+        catch(Exception e) {
+            if( MyDebug.LOG )
+                Log.e(TAG, "Failed to get display name from URI: " + e.getMessage());
+        }
+        return name != null ? name : "video_" + System.currentTimeMillis() + ".mp4";
     }
 
     /** Called when we've finished recording to a video file, to do any necessary cleanup for the

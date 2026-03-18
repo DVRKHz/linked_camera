@@ -3,13 +3,18 @@ package com.linkedcamera.app;
 import android.app.IntentService;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.AssetFileDescriptor;
+import android.database.Cursor;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.net.Uri;
 import android.os.Build;
 import android.preference.PreferenceManager;
+import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.util.Log;
 
@@ -19,6 +24,7 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
@@ -27,14 +33,17 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Background service for uploading photos to Nextcloud via WebDAV
+ * Achtergrond-service voor het uploaden van foto's en video's naar Nextcloud via WebDAV.
  */
 public class NextcloudUploadService extends IntentService {
     private static final String TAG = "NextcloudUploadService";
     private static final String ACTION_UPLOAD = "net.sourceforge.opencamera.action.UPLOAD";
+    private static final String ACTION_UPLOAD_URI = "net.sourceforge.opencamera.action.UPLOAD_URI";
     private static final String ACTION_PROCESS_QUEUE = "net.sourceforge.opencamera.action.PROCESS_QUEUE";
     private static final String EXTRA_FILE_PATH = "net.sourceforge.opencamera.extra.FILE_PATH";
+    private static final String EXTRA_DISPLAY_NAME = "net.sourceforge.opencamera.extra.DISPLAY_NAME";
     private static final String PREF_UPLOAD_QUEUE = "nextcloud_upload_queue";
+    private static final String QUEUE_URI_PREFIX = "uri:";
     private static final String CHANNEL_ID = "nextcloud_upload_channel";
     private static final int NOTIFICATION_ID = 1001;
     private static final int PROGRESS_NOTIFICATION_ID = 1002;
@@ -44,7 +53,7 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Start upload for a specific file
+     * Start upload voor een bestand via filesystem pad.
      */
     public static void startUpload(Context context, String filePath) {
         if (MyDebug.LOG)
@@ -58,7 +67,22 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Process all queued uploads
+     * Start upload voor een bestand via content URI (voor SAF/MEDIASTORE/URI video methoden).
+     */
+    public static void startUpload(Context context, Uri uri, String displayName) {
+        if (MyDebug.LOG)
+            Log.d(TAG, "startUpload called with uri: " + uri + ", displayName: " + displayName);
+        Intent intent = new Intent(context, NextcloudUploadService.class);
+        intent.setAction(ACTION_UPLOAD_URI);
+        intent.setData(uri);
+        intent.putExtra(EXTRA_DISPLAY_NAME, displayName);
+        context.startService(intent);
+        if (MyDebug.LOG)
+            Log.d(TAG, "startService called for URI upload");
+    }
+
+    /**
+     * Verwerk alle uploads in de wachtrij.
      */
     public static void processUploadQueue(Context context) {
         Intent intent = new Intent(context, NextcloudUploadService.class);
@@ -79,6 +103,12 @@ public class NextcloudUploadService extends IntentService {
                 if (MyDebug.LOG)
                     Log.d(TAG, "Handling upload for: " + filePath);
                 handleUpload(filePath);
+            } else if (ACTION_UPLOAD_URI.equals(action)) {
+                final Uri uri = intent.getData();
+                final String displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME);
+                if (MyDebug.LOG)
+                    Log.d(TAG, "Handling URI upload for: " + displayName);
+                handleUploadUri(uri, displayName);
             } else if (ACTION_PROCESS_QUEUE.equals(action)) {
                 if (MyDebug.LOG)
                     Log.d(TAG, "Processing upload queue");
@@ -88,7 +118,7 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Handle upload of a single file (called for immediate uploads, not queue processing)
+     * Upload een enkel bestand via filesystem pad (foto's en VideoMethod.FILE video's).
      */
     private void handleUpload(String filePath) {
         if (MyDebug.LOG)
@@ -96,7 +126,7 @@ public class NextcloudUploadService extends IntentService {
 
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
-        // Check if upload is enabled
+        // Controleer of upload is ingeschakeld
         boolean uploadEnabled = prefs.getBoolean(PreferenceKeys.NextcloudUploadPreferenceKey, false);
         if (MyDebug.LOG)
             Log.d(TAG, "Upload enabled: " + uploadEnabled);
@@ -106,7 +136,7 @@ public class NextcloudUploadService extends IntentService {
             return;
         }
 
-        // Get Nextcloud URL
+        // Haal Nextcloud URL op
         String nextcloudUrl = prefs.getString(PreferenceKeys.NextcloudUrlPreferenceKey, "").trim();
         if (MyDebug.LOG)
             Log.d(TAG, "Nextcloud URL configured: " + (!nextcloudUrl.isEmpty()));
@@ -117,7 +147,7 @@ public class NextcloudUploadService extends IntentService {
             return;
         }
 
-        // Check WiFi if required
+        // Controleer WiFi-vereiste
         boolean wifiOnly = prefs.getBoolean(PreferenceKeys.NextcloudWifiOnlyPreferenceKey, true);
         boolean isWifi = isWifiConnected();
         if (MyDebug.LOG)
@@ -131,7 +161,7 @@ public class NextcloudUploadService extends IntentService {
             return;
         }
 
-        // Perform upload
+        // Upload uitvoeren
         File file = new File(filePath);
 
         if (MyDebug.LOG)
@@ -145,7 +175,15 @@ public class NextcloudUploadService extends IntentService {
         if (MyDebug.LOG)
             Log.d(TAG, "Starting upload for file: " + file.getName() + ", size: " + file.length());
 
-        boolean success = uploadToNextcloud(file, nextcloudUrl);
+        boolean success;
+        try {
+            FileInputStream fis = new FileInputStream(file);
+            success = uploadToNextcloud(fis, file.length(), file.getName(), nextcloudUrl);
+        } catch (IOException e) {
+            if (MyDebug.LOG)
+                Log.e(TAG, "Failed to open file for upload: " + e.getMessage(), e);
+            success = false;
+        }
 
         if (success) {
             if (MyDebug.LOG)
@@ -153,7 +191,7 @@ public class NextcloudUploadService extends IntentService {
             removeFromUploadQueue(filePath);
             showNotification(getString(R.string.nextcloud_upload_success), file.getName());
 
-            // Auto-delete if enabled
+            // Automatisch verwijderen indien ingeschakeld
             boolean autoDelete = prefs.getBoolean(PreferenceKeys.NextcloudAutoDeletePreferenceKey, false);
             if (autoDelete) {
                 if (file.delete()) {
@@ -174,7 +212,105 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Process all files in the upload queue with progress notification
+     * Upload een enkel bestand via content URI (voor SAF/MEDIASTORE/URI video methoden).
+     */
+    private void handleUploadUri(Uri uri, String displayName) {
+        if (MyDebug.LOG)
+            Log.d(TAG, "handleUploadUri called with uri: " + uri + ", displayName: " + displayName);
+
+        if (uri == null) {
+            if (MyDebug.LOG)
+                Log.e(TAG, "URI is null, skipping upload");
+            return;
+        }
+
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+
+        // Controleer of upload is ingeschakeld
+        boolean uploadEnabled = prefs.getBoolean(PreferenceKeys.NextcloudUploadPreferenceKey, false);
+        if (!uploadEnabled) {
+            if (MyDebug.LOG)
+                Log.d(TAG, "Upload not enabled");
+            return;
+        }
+
+        // Haal Nextcloud URL op
+        String nextcloudUrl = prefs.getString(PreferenceKeys.NextcloudUrlPreferenceKey, "").trim();
+        if (nextcloudUrl.isEmpty()) {
+            if (MyDebug.LOG)
+                Log.e(TAG, "Nextcloud URL not configured");
+            showNotification(getString(R.string.nextcloud_upload_failed), "URL not configured");
+            return;
+        }
+
+        // Controleer WiFi-vereiste
+        boolean wifiOnly = prefs.getBoolean(PreferenceKeys.NextcloudWifiOnlyPreferenceKey, true);
+        boolean isWifi = isWifiConnected();
+
+        String queueEntry = QUEUE_URI_PREFIX + displayName + ":" + uri.toString();
+
+        if (wifiOnly && !isWifi) {
+            if (MyDebug.LOG)
+                Log.d(TAG, "WiFi only enabled but not connected, queueing URI");
+            addToUploadQueue(queueEntry);
+            showNotification(getString(R.string.nextcloud_upload_waiting_wifi), displayName);
+            return;
+        }
+
+        // Bestandsgrootte ophalen via ContentResolver
+        long fileSize = getUriFileSize(uri);
+        if (MyDebug.LOG)
+            Log.d(TAG, "Starting URI upload for: " + displayName + ", size: " + fileSize);
+
+        boolean success;
+        try {
+            InputStream inputStream = getContentResolver().openInputStream(uri);
+            if (inputStream == null) {
+                if (MyDebug.LOG)
+                    Log.e(TAG, "Failed to open InputStream for URI: " + uri);
+                addToUploadQueue(queueEntry);
+                showNotification(getString(R.string.nextcloud_upload_failed), displayName);
+                return;
+            }
+            success = uploadToNextcloud(inputStream, fileSize, displayName, nextcloudUrl);
+        } catch (IOException e) {
+            if (MyDebug.LOG)
+                Log.e(TAG, "Failed to open URI for upload: " + e.getMessage(), e);
+            success = false;
+        }
+
+        if (success) {
+            if (MyDebug.LOG)
+                Log.d(TAG, "URI upload successful");
+            removeFromUploadQueue(queueEntry);
+            showNotification(getString(R.string.nextcloud_upload_success), displayName);
+
+            // Automatisch verwijderen indien ingeschakeld
+            boolean autoDelete = prefs.getBoolean(PreferenceKeys.NextcloudAutoDeletePreferenceKey, false);
+            if (autoDelete) {
+                try {
+                    int deleted = getContentResolver().delete(uri, null, null);
+                    if (MyDebug.LOG)
+                        Log.d(TAG, "Content URI delete result: " + deleted);
+                    if (deleted > 0) {
+                        showNotification(getString(R.string.nextcloud_photo_deleted), displayName);
+                    }
+                } catch (Exception e) {
+                    if (MyDebug.LOG)
+                        Log.e(TAG, "Failed to delete content URI after upload: " + e.getMessage(), e);
+                }
+            }
+        } else {
+            if (MyDebug.LOG)
+                Log.e(TAG, "URI upload failed");
+            addToUploadQueue(queueEntry);
+            showNotification(getString(R.string.nextcloud_upload_failed), displayName);
+        }
+    }
+
+    /**
+     * Verwerk alle bestanden in de upload wachtrij met voortgangsnotificatie.
+     * Ondersteunt zowel filesystem-paden als content URI entries (prefix "uri:").
      */
     private void handleProcessQueue() {
         if (MyDebug.LOG)
@@ -195,7 +331,7 @@ public class NextcloudUploadService extends IntentService {
             return;
         }
 
-        // Check if upload is enabled
+        // Controleer of upload is ingeschakeld
         boolean uploadEnabled = prefs.getBoolean(PreferenceKeys.NextcloudUploadPreferenceKey, false);
         if (!uploadEnabled) {
             if (MyDebug.LOG)
@@ -203,7 +339,7 @@ public class NextcloudUploadService extends IntentService {
             return;
         }
 
-        // Pre-check WiFi condition before processing queue
+        // WiFi-check vooraf
         boolean wifiOnly = prefs.getBoolean(PreferenceKeys.NextcloudWifiOnlyPreferenceKey, true);
 
         if (wifiOnly) {
@@ -217,7 +353,7 @@ public class NextcloudUploadService extends IntentService {
                 Log.d(TAG, "WiFi condition met");
         }
 
-        // Get Nextcloud URL
+        // Haal Nextcloud URL op
         String nextcloudUrl = prefs.getString(PreferenceKeys.NextcloudUrlPreferenceKey, "").trim();
         if (nextcloudUrl.isEmpty()) {
             if (MyDebug.LOG)
@@ -226,52 +362,99 @@ public class NextcloudUploadService extends IntentService {
             return;
         }
 
-        // Process each file in queue with progress
+        // Verwerk elke entry met voortgangsnotificatie
         if (MyDebug.LOG)
             Log.d(TAG, "Starting to process " + totalFiles + " files in upload queue");
 
         int successCount = 0;
         int currentFile = 0;
+        boolean autoDelete = prefs.getBoolean(PreferenceKeys.NextcloudAutoDeletePreferenceKey, false);
 
-        for (String filePath : queue) {
+        for (String entry : queue) {
             currentFile++;
-
-            // Show progress notification
             showProgressNotification(currentFile, totalFiles);
 
-            File file = new File(filePath);
+            boolean success = false;
 
-            if (!file.exists()) {
-                if (MyDebug.LOG)
-                    Log.e(TAG, "File does not exist: " + filePath);
-                removeFromUploadQueue(filePath);
-                continue;
-            }
+            if (entry.startsWith(QUEUE_URI_PREFIX)) {
+                // URI-based entry: "uri:DISPLAY_NAME:content://..."
+                String remainder = entry.substring(QUEUE_URI_PREFIX.length());
+                int colonPos = remainder.indexOf(':');
+                if (colonPos == -1) {
+                    if (MyDebug.LOG)
+                        Log.e(TAG, "Malformed URI queue entry: " + entry);
+                    removeFromUploadQueue(entry);
+                    continue;
+                }
+                String displayName = remainder.substring(0, colonPos);
+                String uriString = remainder.substring(colonPos + 1);
+                Uri uri = Uri.parse(uriString);
 
-            boolean success = uploadToNextcloud(file, nextcloudUrl);
-
-            if (success) {
-                if (MyDebug.LOG)
-                    Log.d(TAG, "Upload successful for: " + file.getName());
-                removeFromUploadQueue(filePath);
-                successCount++;
-
-                // Auto-delete if enabled
-                boolean autoDelete = prefs.getBoolean(PreferenceKeys.NextcloudAutoDeletePreferenceKey, false);
-                if (autoDelete) {
-                    if (file.delete()) {
+                long fileSize = getUriFileSize(uri);
+                try {
+                    InputStream inputStream = getContentResolver().openInputStream(uri);
+                    if (inputStream != null) {
+                        success = uploadToNextcloud(inputStream, fileSize, displayName, nextcloudUrl);
+                    } else {
                         if (MyDebug.LOG)
-                            Log.d(TAG, "File deleted after upload");
+                            Log.e(TAG, "Failed to open InputStream for queued URI: " + uriString);
+                    }
+                } catch (IOException e) {
+                    if (MyDebug.LOG)
+                        Log.e(TAG, "Error opening queued URI: " + e.getMessage(), e);
+                }
+
+                if (success) {
+                    removeFromUploadQueue(entry);
+                    successCount++;
+                    if (autoDelete) {
+                        try {
+                            getContentResolver().delete(uri, null, null);
+                        } catch (Exception e) {
+                            if (MyDebug.LOG)
+                                Log.e(TAG, "Failed to delete queued URI: " + e.getMessage(), e);
+                        }
                     }
                 }
             } else {
-                if (MyDebug.LOG)
-                    Log.e(TAG, "Upload failed for: " + file.getName());
-                // Keep in queue for retry
+                // Filesystem pad entry (bestaand gedrag voor foto's en FILE video's)
+                File file = new File(entry);
+
+                if (!file.exists()) {
+                    if (MyDebug.LOG)
+                        Log.e(TAG, "File does not exist: " + entry);
+                    removeFromUploadQueue(entry);
+                    continue;
+                }
+
+                try {
+                    FileInputStream fis = new FileInputStream(file);
+                    success = uploadToNextcloud(fis, file.length(), file.getName(), nextcloudUrl);
+                } catch (IOException e) {
+                    if (MyDebug.LOG)
+                        Log.e(TAG, "Error opening queued file: " + e.getMessage(), e);
+                }
+
+                if (success) {
+                    if (MyDebug.LOG)
+                        Log.d(TAG, "Upload successful for: " + file.getName());
+                    removeFromUploadQueue(entry);
+                    successCount++;
+                    if (autoDelete) {
+                        if (file.delete()) {
+                            if (MyDebug.LOG)
+                                Log.d(TAG, "File deleted after upload");
+                        }
+                    }
+                } else {
+                    if (MyDebug.LOG)
+                        Log.e(TAG, "Upload failed for: " + file.getName());
+                    // Bewaar in wachtrij voor opnieuw proberen
+                }
             }
         }
 
-        // Clear progress notification and show completion
+        // Wis voortgangsnotificatie en toon voltooiing
         cancelProgressNotification();
 
         if (successCount > 0) {
@@ -286,22 +469,28 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Upload file to Nextcloud via WebDAV
+     * Upload een bestand naar Nextcloud via WebDAV.
+     * Accepteert een InputStream zodat zowel filesystem-bestanden als content URIs
+     * geüpload kunnen worden. De InputStream wordt altijd gesloten na afloop.
+     *
+     * @param inputStream  De te uploaden data stream.
+     * @param fileSize     Bestandsgrootte in bytes (voor Content-Length header en timeout).
+     * @param fileName     Bestandsnaam voor de WebDAV URL.
+     * @param shareUrl     Nextcloud public share URL.
+     * @return true als de upload geslaagd is (HTTP 2xx).
      */
-    private boolean uploadToNextcloud(File file, String shareUrl) {
+    private boolean uploadToNextcloud(InputStream inputStream, long fileSize, String fileName, String shareUrl) {
         HttpURLConnection connection = null;
-        FileInputStream fileInputStream = null;
         DataOutputStream outputStream = null;
 
         if (MyDebug.LOG) {
             Log.d(TAG, "uploadToNextcloud: Starting upload with WebDAV");
-            Log.d(TAG, "File: " + file.getAbsolutePath() + ", size: " + file.length());
-            // Note: Do not log shareUrl in production as it contains sensitive token
+            Log.d(TAG, "fileName: " + fileName + ", size: " + fileSize);
         }
 
         try {
             // Parse share URL
-            // Format: https://cloud.example.com/index.php/s/TOKEN
+            // Formaat: https://cloud.example.com/index.php/s/TOKEN
             int indexPos = shareUrl.indexOf("/index.php/s/");
             if (indexPos == -1) {
                 if (MyDebug.LOG)
@@ -312,31 +501,39 @@ public class NextcloudUploadService extends IntentService {
             String baseUrl = shareUrl.substring(0, indexPos);
             String token = shareUrl.substring(indexPos + "/index.php/s/".length());
 
-            // Clean token (remove trailing slashes, query params)
+            // Schoon token op (verwijder slashes, query params)
             token = token.split("[/?]")[0];
 
-            // Construct WebDAV upload URL
-            String uploadUrl = baseUrl + "/public.php/webdav/" + file.getName();
+            // Bouw WebDAV upload URL
+            String uploadUrl = baseUrl + "/public.php/webdav/" + fileName;
 
             if (MyDebug.LOG)
                 Log.d(TAG, "Upload URL constructed");
 
-            // Create HTTP connection
+            // Dynamische timeout: 30s basis + 60s per 100 MB, max 30 minuten
+            int readTimeoutMs = (int) Math.min(
+                30_000L + (fileSize / (100L * 1024L * 1024L)) * 60_000L,
+                30L * 60L * 1000L
+            );
+            if (MyDebug.LOG)
+                Log.d(TAG, "Read timeout: " + readTimeoutMs + "ms for " + fileSize + " bytes");
+
+            // Maak HTTP-verbinding
             URL url = new URL(uploadUrl);
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("PUT");
             connection.setDoOutput(true);
-            connection.setConnectTimeout(30000); // 30 seconds
-            connection.setReadTimeout(30000);
+            connection.setConnectTimeout(30_000);
+            connection.setReadTimeout(readTimeoutMs);
 
             if (MyDebug.LOG)
                 Log.d(TAG, "Connection created, method: PUT");
 
-            // Get password from preferences (optional, for password-protected shares)
+            // Wachtwoord ophalen (optioneel, voor beschermde shares)
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
             String password = prefs.getString(PreferenceKeys.NextcloudPasswordPreferenceKey, "").trim();
 
-            // Set authorization (token as username, password if provided)
+            // Autorisatie instellen (token als gebruikersnaam, optioneel wachtwoord)
             String credentials;
             if (password.isEmpty()) {
                 credentials = token + ":";
@@ -352,19 +549,20 @@ public class NextcloudUploadService extends IntentService {
                 credentials.getBytes(), Base64.NO_WRAP);
             connection.setRequestProperty("Authorization", basicAuth);
             connection.setRequestProperty("Content-Type", "application/octet-stream");
-            connection.setRequestProperty("Content-Length", String.valueOf(file.length()));
+            if (fileSize > 0) {
+                connection.setRequestProperty("Content-Length", String.valueOf(fileSize));
+            }
 
             if (MyDebug.LOG)
                 Log.d(TAG, "Headers set, starting file upload");
 
-            // Upload file data
+            // Upload bestandsdata met 64 KB buffer voor betere doorvoer bij grote bestanden
             outputStream = new DataOutputStream(connection.getOutputStream());
-            fileInputStream = new FileInputStream(file);
 
-            byte[] buffer = new byte[4096];
+            byte[] buffer = new byte[65536];
             int bytesRead;
             long totalBytes = 0;
-            while ((bytesRead = fileInputStream.read(buffer)) != -1) {
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
                 outputStream.write(buffer, 0, bytesRead);
                 totalBytes += bytesRead;
             }
@@ -373,7 +571,7 @@ public class NextcloudUploadService extends IntentService {
             if (MyDebug.LOG)
                 Log.d(TAG, "Upload completed, " + totalBytes + " bytes sent");
 
-            // Check response
+            // Controleer response
             int responseCode = connection.getResponseCode();
             String responseMessage = connection.getResponseMessage();
             if (MyDebug.LOG)
@@ -391,7 +589,7 @@ public class NextcloudUploadService extends IntentService {
             return false;
         } finally {
             try {
-                if (fileInputStream != null) fileInputStream.close();
+                if (inputStream != null) inputStream.close();
                 if (outputStream != null) outputStream.close();
                 if (connection != null) connection.disconnect();
                 if (MyDebug.LOG)
@@ -404,7 +602,27 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Check if WiFi is connected
+     * Haal de bestandsgrootte op voor een content URI.
+     *
+     * @return Bestandsgrootte in bytes, of -1 als onbekend.
+     */
+    private long getUriFileSize(Uri uri) {
+        long size = -1;
+        try {
+            AssetFileDescriptor afd = getContentResolver().openAssetFileDescriptor(uri, "r");
+            if (afd != null) {
+                size = afd.getLength();
+                afd.close();
+            }
+        } catch (IOException e) {
+            if (MyDebug.LOG)
+                Log.e(TAG, "Failed to get file size for URI: " + e.getMessage(), e);
+        }
+        return size;
+    }
+
+    /**
+     * Controleer of WiFi is verbonden.
      */
     private boolean isWifiConnected() {
         ConnectivityManager connectivityManager =
@@ -419,38 +637,38 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Add file to upload queue
+     * Voeg een entry toe aan de upload wachtrij.
      */
-    private void addToUploadQueue(String filePath) {
+    private void addToUploadQueue(String entry) {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         Set<String> queue = new HashSet<>(getUploadQueue());
-        boolean wasAdded = queue.add(filePath);
+        boolean wasAdded = queue.add(entry);
 
         if (wasAdded) {
             prefs.edit().putStringSet(PREF_UPLOAD_QUEUE, queue).apply();
             if (MyDebug.LOG)
-                Log.d(TAG, "Added to queue: " + filePath);
+                Log.d(TAG, "Added to queue: " + entry);
         } else {
             if (MyDebug.LOG)
-                Log.d(TAG, "File already in queue: " + filePath);
+                Log.d(TAG, "Entry already in queue: " + entry);
         }
     }
 
     /**
-     * Remove file from upload queue
+     * Verwijder een entry uit de upload wachtrij.
      */
-    private void removeFromUploadQueue(String filePath) {
+    private void removeFromUploadQueue(String entry) {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         Set<String> queue = new HashSet<>(getUploadQueue());
-        queue.remove(filePath);
+        queue.remove(entry);
         prefs.edit().putStringSet(PREF_UPLOAD_QUEUE, queue).apply();
 
         if (MyDebug.LOG)
-            Log.d(TAG, "Removed from queue: " + filePath);
+            Log.d(TAG, "Removed from queue: " + entry);
     }
 
     /**
-     * Get current upload queue
+     * Haal de huidige upload wachtrij op.
      */
     private Set<String> getUploadQueue() {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
@@ -458,7 +676,7 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Show notification
+     * Toon een notificatie.
      */
     private void showNotification(String title, String message) {
         NotificationManager notificationManager =
@@ -466,7 +684,6 @@ public class NextcloudUploadService extends IntentService {
 
         if (notificationManager == null) return;
 
-        // Create notification channel for Android O and above
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
@@ -487,7 +704,7 @@ public class NextcloudUploadService extends IntentService {
     }
 
     /**
-     * Show progress notification with progress bar
+     * Toon voortgangsnotificatie met voortgangsbalk.
      */
     private void showProgressNotification(int current, int total) {
         NotificationManager notificationManager =
@@ -495,7 +712,6 @@ public class NextcloudUploadService extends IntentService {
 
         if (notificationManager == null) return;
 
-        // Create notification channel for Android O and above
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
@@ -513,14 +729,14 @@ public class NextcloudUploadService extends IntentService {
             .setContentText("Uploading to Nextcloud...")
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setProgress(total, current, false)
-            .setOngoing(true)  // Cannot be dismissed while uploading
+            .setOngoing(true)
             .setAutoCancel(false);
 
         notificationManager.notify(PROGRESS_NOTIFICATION_ID, builder.build());
     }
 
     /**
-     * Cancel the progress notification
+     * Annuleer de voortgangsnotificatie.
      */
     private void cancelProgressNotification() {
         NotificationManager notificationManager =

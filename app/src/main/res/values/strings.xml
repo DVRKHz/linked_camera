@@ -1083,7 +1083,7 @@
     <!-- Nextcloud auto-upload settings -->
     <string name="preference_screen_server_settings">Server settings...</string>
     <string name="preference_nextcloud_upload">Nextcloud Auto-Upload</string>
-    <string name="preference_nextcloud_upload_summary">Automatically upload photos to Nextcloud</string>
+    <string name="preference_nextcloud_upload_summary">Automatically upload photos and videos to Nextcloud</string>
     <string name="preference_nextcloud_url">Nextcloud Share URL</string>
     <string name="preference_nextcloud_url_summary">Enter your Nextcloud public share link</string>
     <string name="preference_nextcloud_password">Share Password (optional)</string>
@@ -1091,19 +1091,19 @@
     <string name="preference_nextcloud_wifi_only">WiFi Only</string>
     <string name="preference_nextcloud_wifi_only_summary">Upload only when connected to WiFi</string>
     <string name="preference_nextcloud_auto_delete">Auto-Delete After Upload</string>
-    <string name="preference_nextcloud_auto_delete_summary">Delete photos after successful upload</string>
+    <string name="preference_nextcloud_auto_delete_summary">Delete files after successful upload</string>
     <string name="preference_nextcloud_process_queue">Process Upload Queue</string>
-    <string name="preference_nextcloud_process_queue_summary">Manually upload queued photos (WiFi required)</string>
+    <string name="preference_nextcloud_process_queue_summary">Manually upload queued files (WiFi required)</string>
     <string name="nextcloud_queue_processing">Processing upload queue...</string>
     <string name="nextcloud_no_wifi">WiFi not connected</string>
-    <string name="nextcloud_upload_success">Photo uploaded to Nextcloud</string>
+    <string name="nextcloud_upload_success">Uploaded to Nextcloud</string>
     <string name="nextcloud_upload_failed">Upload failed</string>
     <string name="nextcloud_upload_waiting_wifi">Queued for WiFi upload</string>
-    <string name="nextcloud_photo_deleted">Photo deleted after upload</string>
-    <string name="preference_nextcloud_queue_empty">No photos pending</string>
-    <string name="preference_nextcloud_queue_count">%d photo(s) pending</string>
+    <string name="nextcloud_photo_deleted">File deleted after upload</string>
+    <string name="preference_nextcloud_queue_empty">No files pending</string>
+    <string name="preference_nextcloud_queue_count">%d file(s) pending</string>
     <string name="nextcloud_uploading_progress">Uploading %1$d of %2$d...</string>
-    <string name="nextcloud_upload_complete">Upload complete (%d photos)</string>
+    <string name="nextcloud_upload_complete">Upload complete (%d files)</string>
 
     <!-- There's no point translating the What's New text (and shouldn't be included in language-specific strings.xml) - it'll be updated constantly, and change each version -->
     <string name="whats_new_text" translatable="false">
