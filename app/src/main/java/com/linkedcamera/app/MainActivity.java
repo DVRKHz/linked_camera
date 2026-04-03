@@ -2877,6 +2877,36 @@ public class MainActivity extends AppCompatActivity implements PreferenceFragmen
             any_change = true;
 
             switch( key ) {
+                // display-only settings: update DrawPreview cache immediately so overlays
+                // reflect changes without needing to close and reopen settings
+                case "preference_show_zoom":
+                case "preference_show_angle":
+                case "preference_show_angle_line":
+                case "preference_show_pitch_lines":
+                case "preference_angle_highlight_color":
+                    //case "preference_show_geo_direction": // don't whitelist these, as if enabled we need to call checkMagneticAccuracy()
+                    //case "preference_show_geo_direction_lines": // as above
+                case "preference_show_battery":
+                case "preference_show_time":
+                case "preference_free_memory":
+                case "preference_show_iso":
+                case "preference_histogram":
+                case "preference_zebra_stripes":
+                case "preference_zebra_stripes_foreground_color":
+                case "preference_zebra_stripes_background_color":
+                case "preference_focus_peaking":
+                case "preference_focus_peaking_color":
+                case "preference_show_video_max_amp":
+                case "preference_grid":
+                case "preference_crop_guide":
+                case "preference_thumbnail_animation":
+                case "preference_take_photo_border":
+                case "preference_focus_assist":
+                case "ghost_image_alpha":
+                    if( MyDebug.LOG )
+                        Log.d(TAG, "display-only change, updating DrawPreview cache");
+                    applicationInterface.getDrawPreview().updateSettings();
+                    break;
                 // we whitelist preferences where we're sure that we don't need to call updateForSettings() if they've changed
                 //case "preference_face_detection": // need to update camera controller
                 case "preference_timer":
@@ -2905,30 +2935,6 @@ public class MainActivity extends AppCompatActivity implements PreferenceFragmen
                 case "preference_startup_focus":
                     //case "preference_preview_size": // need to update preview
                     //case "preference_ghost_image": // don't whitelist this, as may need to reload ghost image (at fullscreen resolution) if "last" is enabled
-                case "ghost_image_alpha":
-                case "preference_focus_assist":
-                case "preference_show_zoom":
-                case "preference_show_angle":
-                case "preference_show_angle_line":
-                case "preference_show_pitch_lines":
-                case "preference_angle_highlight_color":
-                    //case "preference_show_geo_direction": // don't whitelist these, as if enabled we need to call checkMagneticAccuracy()
-                    //case "preference_show_geo_direction_lines": // as above
-                case "preference_show_battery":
-                case "preference_show_time":
-                case "preference_free_memory":
-                case "preference_show_iso":
-                case "preference_histogram":
-                case "preference_zebra_stripes":
-                case "preference_zebra_stripes_foreground_color":
-                case "preference_zebra_stripes_background_color":
-                case "preference_focus_peaking":
-                case "preference_focus_peaking_color":
-                case "preference_show_video_max_amp":
-                case "preference_grid":
-                case "preference_crop_guide":
-                case "preference_thumbnail_animation":
-                case "preference_take_photo_border":
                     //case "preference_rotate_preview": // need to update the Preview
                     //case "preference_ui_placement": // need to update the UI
                     //case "preference_immersive_mode": // probably could whitelist?
